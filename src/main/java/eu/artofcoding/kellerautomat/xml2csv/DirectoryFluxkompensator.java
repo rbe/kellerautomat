@@ -1,7 +1,6 @@
 package eu.artofcoding.kellerautomat.xml2csv;
 
 import javax.xml.transform.Transformer;
-import javax.xml.transform.TransformerConfigurationException;
 import javax.xml.transform.TransformerException;
 import javax.xml.transform.TransformerFactory;
 import javax.xml.transform.stream.StreamResult;
@@ -9,13 +8,28 @@ import javax.xml.transform.stream.StreamSource;
 import java.io.IOException;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
 
 public class DirectoryFluxkompensator {
 
-    public static void transform(Path dataXML, Path inputXSL, Path output) throws TransformerConfigurationException, TransformerException {
-        net.sf.saxon.TransformerFactoryImpl t;
+    private List<LoggerCallback> loggerCallbackList = new ArrayList<>();
+
+    public static void main(String[] args) throws IOException {
+        if (args.length == 0) {
+            System.out.format("Please give working directory as first argument%n");
+            System.out.format("usage: java %s <working directory>%n", DirectoryFluxkompensator.class.getName());
+            System.exit(1);
+        } else {
+            final Path workingDirectory = Paths.get(args[0]).toAbsolutePath();
+            DirectoryFluxkompensator directoryFluxkompensator = new DirectoryFluxkompensator();
+            directoryFluxkompensator.process(workingDirectory);
+        }
+    }
+
+    private void transform(Path dataXML, Path inputXSL, Path output) throws TransformerException {
         System.setProperty("javax.xml.transform.TransformerFactory", "net.sf.saxon.TransformerFactoryImpl");
         TransformerFactory factory = TransformerFactory.newInstance();
         StreamSource xslStream = new StreamSource(inputXSL.toFile());
@@ -25,18 +39,63 @@ public class DirectoryFluxkompensator {
         transformer.transform(in, out);
     }
 
-    public static void main(String[] args) throws IOException {
-        final Path workingDirectory = Paths.get(args[0]).toAbsolutePath();
-        final Path xslPath = workingDirectory.resolve("xsl");
+    public void addLoggerCallback(LoggerCallback loggerCallback) {
+        loggerCallbackList.add(loggerCallback);
+    }
+
+    private void log(String message) {
+        for (LoggerCallback loggerCallback : loggerCallbackList) {
+            loggerCallback.log(message);
+        }
+    }
+
+    public void process(Path xmlPath, Path xslPath, Path outputPath) throws IOException {
         final Set<Path> xslFiles = new TreeSet<>();
         Files.walkFileTree(xslPath, new TreeSet<FileVisitOption>(), 1, new XslFileVisitor(xslFiles));
-        final Path xmlPath = workingDirectory.resolve("xml");
-        final Path outputPath = workingDirectory.resolve("output").toAbsolutePath();
         outputPath.toFile().mkdirs();
         Files.walkFileTree(xmlPath, new TreeSet<FileVisitOption>(), 1, new XmlFileVisitor(xslFiles, outputPath));
     }
 
-    private static class XmlFileVisitor implements FileVisitor<Path> {
+    public void process(Path workingDirectory) throws IOException {
+        final Path xslPath = workingDirectory.resolve("xsl");
+        final Path xmlPath = workingDirectory.resolve("xml");
+        final Path outputPath = workingDirectory.resolve("output").toAbsolutePath();
+        process(xmlPath, xslPath, outputPath);
+    }
+
+    private class XslFileVisitor implements FileVisitor<Path> {
+
+        private Set<Path> xslFiles;
+
+        private XslFileVisitor(Set<Path> xslFiles) {
+            this.xslFiles = xslFiles;
+        }
+
+        @Override
+        public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
+            return FileVisitResult.CONTINUE;
+        }
+
+        @Override
+        public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+            if (file.toString().endsWith(".xsl")) {
+                xslFiles.add(file);
+            }
+            return FileVisitResult.CONTINUE;
+        }
+
+        @Override
+        public FileVisitResult visitFileFailed(Path file, IOException exc) throws IOException {
+            return FileVisitResult.CONTINUE;
+        }
+
+        @Override
+        public FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException {
+            return FileVisitResult.CONTINUE;
+        }
+    }
+
+    private class XmlFileVisitor implements FileVisitor<Path> {
 
         private Set<Path> xslFiles;
 
@@ -54,15 +113,18 @@ public class DirectoryFluxkompensator {
 
         @Override
         public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-            for (Path xsl : xslFiles) {
-                System.out.printf("Processing XML file '%s' with stylesheet '%s'%n", file.getFileName(), xsl.getFileName());
-                try {
-                    String xmlFilename = file.getFileName().toString().replaceAll(".xml", "");
-                    String xslFilename = xsl.getName(xsl.getNameCount()-1).toString().replaceAll(".xsl", "");
-                    Path output = outputPath.resolve(xmlFilename + "-" + xslFilename + ".csv");
-                    transform(file, xsl, output);
-                } catch (TransformerException e) {
-                    e.printStackTrace();
+            if (file.toString().endsWith(".xml")) {
+                for (Path xsl : xslFiles) {
+                    log(String.format("Processing XML file '%s' with stylesheet '%s'", file.getFileName(), xsl.getFileName()));
+                    try {
+                        String xmlFilename = file.getFileName().toString().replaceAll(".xml", "");
+                        String xslFilename = xsl.getName(xsl.getNameCount() - 1).toString().replaceAll(".xsl", "");
+                        String csvFileName = String.format("%s-%s.csv", xmlFilename, xslFilename);
+                        Path output = outputPath.resolve(csvFileName);
+                        transform(file, xsl, output);
+                    } catch (TransformerException e) {
+                        e.printStackTrace();
+                    }
                 }
             }
             return FileVisitResult.CONTINUE;
@@ -78,36 +140,6 @@ public class DirectoryFluxkompensator {
             return FileVisitResult.CONTINUE;
         }
 
-    }
-
-    private static class XslFileVisitor implements FileVisitor<Path> {
-
-        private Set<Path> xslFiles;
-
-        private XslFileVisitor(Set<Path> xslFiles) {
-            this.xslFiles = xslFiles;
-        }
-
-        @Override
-        public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
-            return FileVisitResult.CONTINUE;
-        }
-
-        @Override
-        public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-            xslFiles.add(file);
-            return FileVisitResult.CONTINUE;
-        }
-
-        @Override
-        public FileVisitResult visitFileFailed(Path file, IOException exc) throws IOException {
-            return FileVisitResult.CONTINUE;
-        }
-
-        @Override
-        public FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException {
-            return FileVisitResult.CONTINUE;
-        }
     }
 
 }
